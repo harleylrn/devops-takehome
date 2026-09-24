@@ -1,0 +1,95 @@
+// Runs the same steps documented in README.md — checkout, lint/test, build,
+// immutable-tag push, deploy, rollout check, smoke test. Any stage failure
+// fails the pipeline; there is no "deploy anyway" path.
+pipeline {
+    agent any
+
+    environment {
+        REGISTRY  = 'localhost:5000'
+        NAMESPACE = 'takehome'
+        IMAGE_TAG = "${env.GIT_COMMIT.take(7)}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Lint & Unit Test') {
+            steps {
+                sh '''
+                    uv sync --frozen --extra dev
+                    uv run ruff check .
+                    uv run pytest tests/unit -m "not integration"
+                '''
+            }
+        }
+
+        stage('Build Images') {
+            steps {
+                sh '''
+                    docker build -t ${REGISTRY}/takehome-api:${IMAGE_TAG} -f docker/api.Dockerfile .
+                    docker build -t ${REGISTRY}/takehome-worker:${IMAGE_TAG} -f docker/worker.Dockerfile .
+                    docker build -t ${REGISTRY}/takehome-mock:${IMAGE_TAG} -f mock/Dockerfile .
+                '''
+            }
+        }
+
+        stage('Publish Images') {
+            steps {
+                // Same rule as scripts/setup.sh: a kind cluster has no registry to push
+                // to, so load images straight into its nodes; otherwise push normally.
+                sh '''
+                    if command -v kind >/dev/null 2>&1 && kind get clusters 2>/dev/null | grep -q .; then
+                        KIND_CLUSTER="$(kind get clusters | head -n1)"
+                        kind load docker-image ${REGISTRY}/takehome-api:${IMAGE_TAG} --name "${KIND_CLUSTER}"
+                        kind load docker-image ${REGISTRY}/takehome-worker:${IMAGE_TAG} --name "${KIND_CLUSTER}"
+                        kind load docker-image ${REGISTRY}/takehome-mock:${IMAGE_TAG} --name "${KIND_CLUSTER}"
+                    else
+                        docker push ${REGISTRY}/takehome-api:${IMAGE_TAG}
+                        docker push ${REGISTRY}/takehome-worker:${IMAGE_TAG}
+                        docker push ${REGISTRY}/takehome-mock:${IMAGE_TAG}
+                    fi
+                '''
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh '''
+                    kubectl apply -f k8s/base/namespace.yaml
+                    kubectl apply -f k8s/base/configmap.yaml
+                    kubectl apply -f k8s/base/rabbitmq.yaml
+                    kubectl apply -f k8s/base/redis.yaml
+                    kubectl rollout status statefulset/rabbitmq -n ${NAMESPACE} --timeout=120s
+                    kubectl rollout status statefulset/redis -n ${NAMESPACE} --timeout=120s
+                    kubectl apply -f k8s/base/mock.yaml
+                    kubectl apply -f k8s/base/api.yaml
+                    kubectl apply -f k8s/base/worker.yaml
+                    kubectl apply -f k8s/base/ingress.yaml
+                    kubectl set image deployment/mock mock=${REGISTRY}/takehome-mock:${IMAGE_TAG} -n ${NAMESPACE}
+                    kubectl set image deployment/api api=${REGISTRY}/takehome-api:${IMAGE_TAG} -n ${NAMESPACE}
+                    kubectl set image deployment/worker worker=${REGISTRY}/takehome-worker:${IMAGE_TAG} -n ${NAMESPACE}
+                '''
+            }
+        }
+
+        stage('Rollout Check') {
+            steps {
+                sh '''
+                    kubectl rollout status deployment/mock -n ${NAMESPACE} --timeout=120s
+                    kubectl rollout status deployment/api -n ${NAMESPACE} --timeout=120s
+                    kubectl rollout status deployment/worker -n ${NAMESPACE} --timeout=120s
+                '''
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+                sh './scripts/verify.sh'
+            }
+        }
+    }
+}

@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: takehome
+data:
+  HOST: "0.0.0.0"
+  APP_API_PORT: "8000"
+  APP_WORKER_PORT: "8001"
+  APP_MOCK_PORT: "8081"
+  QUEUE_NAME: "jobs"
+  EXTERNAL_SERVICE_URL: "http://mock.takehome.svc.cluster.local:8081/infer"
+  MOCK_MODE: "normal"
+  MOCK_DELAY_SECONDS: "8"
+  DEPENDENCY_TIMEOUT_SECONDS: "3"
+  EXTERNAL_TIMEOUT_SECONDS: "5"
+  EXTERNAL_MAX_ATTEMPTS: "3"
+  RETRY_BACKOFF_SECONDS: "0.5"
+  RECONNECT_DELAY_SECONDS: "2"
+  WORKER_PREFETCH: "1"
+  SHUTDOWN_GRACE_SECONDS: "20"
+  RESULT_TTL_SECONDS: "86400"
+  LOG_LEVEL: "INFO"

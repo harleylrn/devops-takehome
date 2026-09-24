@@ -1,0 +1,108 @@
+# Optional: a minimal in-cluster Prometheus scraping the app's own
+# /metrics endpoints. Not part of k8s/base since the app doesn't need it
+# to run — apply separately with: kubectl apply -f observability/prometheus-config.yaml
+#
+# Uses pod-role service discovery, not a static target on the api/worker
+# Service DNS name: a Service ClusterIP load-balances to one backend per
+# connection, so scraping it only ever reaches one replica — the other
+# pod's metrics are invisible. Pod SD gets one target per actual pod.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: takehome
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: takehome-prometheus-pod-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: takehome-prometheus-pod-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: takehome-prometheus-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: takehome
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: takehome
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      - job_name: takehome-pods
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["takehome"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            regex: "api|worker"
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: job
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: takehome
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.55.1
+          args: ["--config.file=/etc/prometheus/prometheus.yml"]
+          ports:
+            - containerPort: 9090
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: takehome
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090

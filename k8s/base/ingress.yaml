@@ -1,0 +1,22 @@
+# Only the job API routes are exposed externally. RabbitMQ, Redis, mock,
+# worker, and the api's own /livez /readyz /metrics stay ClusterIP-only —
+# reachable inside the cluster (or via kubectl port-forward), never via ingress.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api
+  namespace: takehome
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /jobs
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000

@@ -1,0 +1,51 @@
+name: devops-takehome-dependencies
+services:
+  rabbitmq:
+    image: rabbitmq:4.1.4-management
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?Run python scripts/init_env.py}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Run python scripts/init_env.py}
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "gosu", "rabbitmq", "rabbitmq-diagnostics", "-q", "ping"]
+      start_period: 15s
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  redis:
+    image: redis:7.4.5-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run python scripts/init_env.py}
+    command: ["sh", "-c", 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  mock:
+    build:
+      context: .
+      dockerfile: mock/Dockerfile
+    image: devops-takehome-mock:1.0.0
+    environment:
+      MOCK_MODE: ${MOCK_MODE:-normal}
+      MOCK_DELAY_SECONDS: ${MOCK_DELAY_SECONDS:-8}
+    ports:
+      - "127.0.0.1:8081:8081"
+    healthcheck:
+      test: ["CMD", "python", "-m", "takehome.healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+volumes:
+  rabbitmq-data:
+  redis-data:
