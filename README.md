@@ -306,7 +306,7 @@ CI/CD Jenkinsfile (~0.75h), observability (~0.5h), resilience/scaling demo (~0.3
 scripts + this writeup (~0.5h). Left undone: NetworkPolicies, HPA/KEDA, TLS,
 multi-node RabbitMQ/Redis — called out above rather than half-built.
 
-### Production improvements (not built, discussed for the live review)
+### Production improvements (not built, to discussed for the live review)
 
 API HPA on request rate/CPU; queue-depth-driven worker autoscaling (KEDA);
 NetworkPolicies with CNI enforcement proof; mTLS/workload identity between services;
