@@ -281,6 +281,37 @@ Restored afterward to the manifests' declared state: `worker` replicas=2, `MOCK_
 Terminal-state idempotency in `storage.py`/`worker.py` means redelivery after a pod
 kill never double-processes a completed job.
 
+### Autoscaling (HPA)
+
+`k8s/base/hpa.yaml` — CPU-based `HorizontalPodAutoscaler` for `api` and `worker`
+(min 2 / max 6, 70% utilization target). Tested with real sustained load, not just
+`kubectl get hpa` right after applying it:
+
+```sh
+for i in $(seq 1 8); do
+  python3 scripts/load_test.py --base-url http://localhost --jobs 1000 --concurrency 50
+done
+```
+
+```
+t+30s : api cpu: 124%/70% (4 replicas)   worker cpu: 89%/70% (5 replicas)
+t+40s : api cpu: 122%/70% (6 replicas)   worker cpu: 92%/70% (6 replicas)   <- both at max
+...load stops...
+t+40s  after: api/worker cpu back to 3-4%, still 6 replicas each (scale-down stabilization)
+t+320s after: both back to 2 replicas   <- default 5-min scale-down window elapsed
+```
+
+Full cycle verified: 2 → 6 (scale-up, ~30-40s under load) → holds at 6 for the ~5-minute
+default stabilization window after load stops → 2 (scale-down). One thing this corrects
+from the note in Decisions & limitations below: under a genuine throughput burst, CPU
+*does* move on the worker too (hit 92%, scaled to max) — it isn't uniformly a dead
+signal. The actual gap is narrower and specific: in the earlier resilience/scaling demo,
+the queue backed up because the *external call was slow*, not because there was more
+CPU-bound work to do — the worker sat mostly idle waiting on I/O, so CPU stayed flat
+while the queue grew to 10 messages. CPU-based HPA reacts fine to "more jobs arriving
+faster"; it's blind to "jobs are arriving fine but stuck behind a slow dependency" —
+that second case is exactly what queue-depth-driven scaling (KEDA) is for.
+
 ### Decisions & limitations
 
 - StatefulSets for RabbitMQ/Redis (1 replica each) — correct primitive for storage
@@ -289,14 +320,12 @@ kill never double-processes a completed job.
   Sentinel/cluster or a managed instance.
 - No NetworkPolicy shipped — optional per the assignment, cut for time; see
   Networking section above for what production needs.
-- `k8s/base/hpa.yaml` adds CPU-based HPAs (min 2 / max 6, 70% utilization target) for
-  both `api` and `worker`, verified live (`ScalingActive: True`, real CPU% resolved via
-  metrics-server). For `api` this is the right signal — CPU tracks request load. For
-  `worker` it's honestly a weak signal: the worker is mostly idle waiting on
-  RabbitMQ/the external call, so CPU stays flat even when the queue backs up (observed
-  directly in the scaling demo above — 3-4% CPU throughout, despite a 10-message
-  backlog). Shipped for parity/demo purposes; the real production answer for the worker
-  is a queue-depth-driven KEDA ScaledObject, not CPU.
+- `k8s/base/hpa.yaml` adds CPU-based HPAs for `api` and `worker` — see Autoscaling (HPA)
+  above for the live load-test evidence (full 2→6→2 cycle). CPU reacts correctly to a
+  raw throughput burst on both, but is blind to backlog caused by a slow external
+  dependency rather than more work arriving (also demonstrated above). The production
+  answer for that second case is a queue-depth-driven KEDA ScaledObject on the worker,
+  not CPU.
 - `observability/queries.md` uses the RabbitMQ management HTTP API for queue depth,
   not `rabbitmqctl`. Discovered during the resilience demo above: each `rabbitmqctl`
   invocation in this image spins up a fresh Erlang node and takes ~60s to return, which
