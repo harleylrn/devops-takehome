@@ -1,0 +1,51 @@
+# CPU-based HorizontalPodAutoscalers. Requires metrics-server (see
+# observability/queries.md for the kind-specific install + --kubelet-insecure-tls patch).
+#
+# api is request-driven — CPU utilization tracks load reasonably well, this is the
+# textbook HPA use case.
+#
+# worker is not CPU-bound: it's mostly idle waiting on RabbitMQ/the external mock call,
+# so CPU utilization stays flat even when the queue backs up (observed directly during
+# the load-test demo in README.md). A CPU-based HPA here will barely react to the thing
+# that actually matters — queue depth. Shipped for parity/demo purposes; the production
+# answer is a KEDA ScaledObject scaling on RabbitMQ queue depth instead, noted in
+# README's Decisions & limitations.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api
+  namespace: takehome
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  namespace: takehome
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

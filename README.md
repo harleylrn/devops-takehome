@@ -289,8 +289,14 @@ kill never double-processes a completed job.
   Sentinel/cluster or a managed instance.
 - No NetworkPolicy shipped — optional per the assignment, cut for time; see
   Networking section above for what production needs.
-- No HPA — manual `kubectl scale` demonstrated instead; a queue-depth-driven KEDA
-  ScaledObject on the worker Deployment would be the production version.
+- `k8s/base/hpa.yaml` adds CPU-based HPAs (min 2 / max 6, 70% utilization target) for
+  both `api` and `worker`, verified live (`ScalingActive: True`, real CPU% resolved via
+  metrics-server). For `api` this is the right signal — CPU tracks request load. For
+  `worker` it's honestly a weak signal: the worker is mostly idle waiting on
+  RabbitMQ/the external call, so CPU stays flat even when the queue backs up (observed
+  directly in the scaling demo above — 3-4% CPU throughout, despite a 10-message
+  backlog). Shipped for parity/demo purposes; the real production answer for the worker
+  is a queue-depth-driven KEDA ScaledObject, not CPU.
 - `observability/queries.md` uses the RabbitMQ management HTTP API for queue depth,
   not `rabbitmqctl`. Discovered during the resilience demo above: each `rabbitmqctl`
   invocation in this image spins up a fresh Erlang node and takes ~60s to return, which
