@@ -52,3 +52,29 @@ spec:
         value: "5"          # target ~5 queued messages per replica
       authenticationRef:
         name: keda-trigger-auth-rabbitmq
+---
+# Same idea, applied to api: KEDA's built-in `cpu` scaler wraps the same
+# metrics-server resource metric hpa.yaml's plain CPU HPA uses — same behavior,
+# just under KEDA instead of a separate mechanism, so both services can be
+# managed through one tool. No TriggerAuthentication needed; it's a resource
+# metric, not an external system.
+#
+# NOT YET LIVE-TESTED (unlike worker-queue-depth above). Same conflict rule
+# applies: delete the live `api` HPA (`kubectl delete hpa api -n takehome`)
+# before applying this, or it will fight the existing plain HPA over
+# Deployment.spec.replicas.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: api-cpu
+  namespace: takehome
+spec:
+  scaleTargetRef:
+    name: api
+  minReplicaCount: 2
+  maxReplicaCount: 6
+  triggers:
+    - type: cpu
+      metadata:
+        type: Utilization
+        value: "70"

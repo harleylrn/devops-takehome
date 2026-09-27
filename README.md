@@ -358,6 +358,16 @@ Worker pod CPU stayed at 3-7m throughout except the two pods actively mid-call
 (~200-250m briefly) — confirms this reacted to the *queue*, not to CPU pressure, which
 is exactly the gap the CPU-based HPA above has.
 
+**Scaling `api` under KEDA too.** KEDA isn't RabbitMQ-only — it has a built-in `cpu`
+scaler that wraps the same metrics-server resource metric the plain HPA uses. Added an
+`api-cpu` ScaledObject (also in `keda-scaledobject.yaml`) so both services can be managed
+through one consistent tool instead of mixing a plain HPA and KEDA. Same target as the
+existing HPA (70% utilization, min 2 / max 6) — behavior should be identical, since it's
+the same underlying metric feeding an equivalent KEDA-managed HPA. **Not yet live-tested**
+(unlike the worker ScaledObject above) — same conflict rule applies: `kubectl delete hpa
+api -n takehome` before applying it, since a plain HPA and a ScaledObject can't both
+control `api`'s replicas at once.
+
 ### Decisions & limitations
 
 - StatefulSets for RabbitMQ/Redis (1 replica each) — correct primitive for storage
