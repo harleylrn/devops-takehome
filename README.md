@@ -312,6 +312,52 @@ while the queue grew to 10 messages. CPU-based HPA reacts fine to "more jobs arr
 faster"; it's blind to "jobs are arriving fine but stuck behind a slow dependency" —
 that second case is exactly what queue-depth-driven scaling (KEDA) is for.
 
+### Queue-depth autoscaling (KEDA)
+
+`k8s/base/keda-scaledobject.yaml` — a `TriggerAuthentication` (reuses the existing
+`app-secrets` `RABBITMQ_URL`, no new credentials) and a `ScaledObject` that scales
+`worker` on actual RabbitMQ queue length instead of CPU, targeting ~5 queued messages
+per replica (min 2 / max 6 — same range as the CPU HPA, for a fair comparison).
+
+**A plain HPA and a KEDA ScaledObject cannot both control the same Deployment at once**
+— both write `Deployment.spec.replicas` and would fight each other. `hpa.yaml`'s
+`worker` HPA is left in the repo as the CPU-based alternative; only one should be live
+on the cluster (`kubectl delete hpa worker -n takehome` before applying the
+ScaledObject). KEDA installed with:
+
+```sh
+kubectl apply --server-side --force-conflicts \
+  -f https://github.com/kedacore/keda/releases/download/v2.21.0/keda-2.21.0.yaml
+```
+
+(`--server-side` avoids a client-side-apply annotation-size limit on KEDA's CRDs;
+`--force-conflicts` only needed because a plain `apply` was tried first here.)
+
+Two things learned by actually deploying it rather than trusting the docs:
+- `pollingInterval`/`cooldownPeriod` are no-ops with `minReplicaCount: 2` — KEDA's
+  admission webhook warns on this at apply time. They only matter when scaling
+  from/to zero. With `minReplicaCount > 0`, KEDA creates a standard
+  `HorizontalPodAutoscaler` (`keda-hpa-worker-queue-depth`) fed by the RabbitMQ
+  metric, and that HPA's own defaults govern cadence — same ~15s sync period and
+  ~5-minute scale-down stabilization as any other HPA. Removed the fields from the
+  manifest rather than leave dead config in.
+- Ran the exact scenario that CPU-based scaling was blind to (see the manual scaling
+  demo above: single worker + slow mock backs the queue up while CPU stays flat).
+  This time with KEDA driving `worker`, `MOCK_MODE=slow` (3s delay), 2-replica baseline,
+  30-job burst:
+
+```
+t+8s : queue metric 11/5 (avg), still 2 replicas    <- HPA has seen it, about to react
+t+24s: queue metric 2500m/5 (avg), 4 replicas       <- scaled up on queue depth alone
+t+40s: queue metric 0/5 (avg), 5 replicas           <- queue drained, 30/30 jobs succeeded
+...queue stays empty...
+t+240s: back to 2 replicas                          <- same ~5-min scale-down window as CPU HPA
+```
+
+Worker pod CPU stayed at 3-7m throughout except the two pods actively mid-call
+(~200-250m briefly) — confirms this reacted to the *queue*, not to CPU pressure, which
+is exactly the gap the CPU-based HPA above has.
+
 ### Decisions & limitations
 
 - StatefulSets for RabbitMQ/Redis (1 replica each) — correct primitive for storage
@@ -323,9 +369,11 @@ that second case is exactly what queue-depth-driven scaling (KEDA) is for.
 - `k8s/base/hpa.yaml` adds CPU-based HPAs for `api` and `worker` — see Autoscaling (HPA)
   above for the live load-test evidence (full 2→6→2 cycle). CPU reacts correctly to a
   raw throughput burst on both, but is blind to backlog caused by a slow external
-  dependency rather than more work arriving (also demonstrated above). The production
-  answer for that second case is a queue-depth-driven KEDA ScaledObject on the worker,
-  not CPU.
+  dependency rather than more work arriving (also demonstrated above). Built and
+  verified the actual fix for `worker` too — see Queue-depth autoscaling (KEDA) above —
+  rather than leaving it as a "production would do X" note. Only one of the two can be
+  live on the cluster at a time for `worker` (they'd fight over `Deployment.spec.replicas`);
+  `api` keeps its CPU-based HPA either way, that's the right signal there.
 - `observability/queries.md` uses the RabbitMQ management HTTP API for queue depth,
   not `rabbitmqctl`. Discovered during the resilience demo above: each `rabbitmqctl`
   invocation in this image spins up a fresh Erlang node and takes ~60s to return, which
@@ -336,14 +384,16 @@ that second case is exactly what queue-depth-driven scaling (KEDA) is for.
 
 ### Time spent
 
-~4 hours: containerization + K8s manifests (~1.5h), networking/ingress (~0.3h),
-CI/CD Jenkinsfile (~0.75h), observability (~0.5h), resilience/scaling demo (~0.3h),
-scripts + this writeup (~0.5h). Left undone: NetworkPolicies, HPA/KEDA, TLS,
-multi-node RabbitMQ/Redis — called out above rather than half-built.
+~4 hours core assignment: containerization + K8s manifests (~1.5h), networking/ingress
+(~0.3h), CI/CD Jenkinsfile (~0.75h), observability (~0.5h), resilience/scaling demo
+(~0.3h), scripts + writeup (~0.5h). Plus follow-up work on `feat/hpa` and
+`feat/keda-queue-scaling` branches: CPU-based HPA for api/worker with live load-test
+evidence, metrics-server install, and KEDA queue-depth scaling for worker with its own
+live backlog test. Left undone: NetworkPolicies, TLS, multi-node RabbitMQ/Redis — called
+out above rather than half-built.
 
-### Production improvements (not built, to discussed for the live review)
+### Production improvements (not built, to discuss for the live review)
 
-API HPA on request rate/CPU; queue-depth-driven worker autoscaling (KEDA);
 NetworkPolicies with CNI enforcement proof; mTLS/workload identity between services;
 RabbitMQ/Redis HA with backup and restore drills; progressive rollout (canary/blue-green)
 with automatic rollback on smoke-test or error-rate regression.

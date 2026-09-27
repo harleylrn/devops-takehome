@@ -1,0 +1,54 @@
+# Alternative to the CPU-based worker HPA in hpa.yaml: scales the worker on
+# actual RabbitMQ queue depth instead of CPU. This is the fix for the gap
+# documented in README.md's Autoscaling section — CPU reacts to raw
+# throughput but is blind to backlog caused by a slow external dependency
+# (worker mostly idle waiting on I/O, CPU stays flat, queue keeps growing).
+#
+# NOTE: a plain HorizontalPodAutoscaler and a KEDA ScaledObject cannot both
+# control replicas on the same Deployment at once (both write
+# Deployment.spec.replicas and will fight each other). hpa.yaml's `worker`
+# HPA is left in the repo as the CPU-based alternative for comparison, but
+# only one of the two should actually be applied to the cluster at a time —
+# `kubectl delete hpa worker -n takehome` before applying this ScaledObject.
+#
+# Requires KEDA installed on the cluster:
+#   kubectl apply --server-side --force-conflicts \
+#     -f https://github.com/kedacore/keda/releases/download/v2.21.0/keda-2.21.0.yaml
+# (--server-side avoids a client-side-apply annotation-size limit on KEDA's CRDs;
+# --force-conflicts is only needed if a plain `kubectl apply` was tried first.)
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-trigger-auth-rabbitmq
+  namespace: takehome
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: app-secrets
+      key: RABBITMQ_URL
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-queue-depth
+  namespace: takehome
+spec:
+  scaleTargetRef:
+    name: worker
+  minReplicaCount: 2
+  maxReplicaCount: 6
+  # pollingInterval/cooldownPeriod are both no-ops here (verified live — KEDA's
+  # admission webhook warns on apply): they only take effect when
+  # minReplicaCount is 0 or idleReplicaCount is set. Since minReplicaCount is 2,
+  # KEDA creates a standard HorizontalPodAutoscaler (`keda-hpa-worker-queue-depth`)
+  # fed by the rabbitmq metric, and that HPA's own defaults govern cadence: the
+  # usual ~15s HPA sync period for scale-up, ~5min stabilization window for
+  # scale-down. Left out below rather than kept as misleading dead config.
+  triggers:
+    - type: rabbitmq
+      metadata:
+        queueName: jobs
+        mode: QueueLength   # scale on messages ready/unacked, not consumer count
+        value: "5"          # target ~5 queued messages per replica
+      authenticationRef:
+        name: keda-trigger-auth-rabbitmq
